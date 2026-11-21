@@ -1,10 +1,38 @@
 # DBKey
+
+## SpectraST corrections in this fork
+
+This fork fixes equal-length peak-list parsing, Filter OFF and strongest Top N
+selection, fragment annotation handling, signed modification masses and implicit
+cysteine carbamidomethylation. Conversion reads complete records in blocks
+without socket workers. See [the correction notes](docs/SpectraST-fixes.md) for
+behavior changes, validation scope and the optional legacy cysteine setting.
+
+For native conversion and regression checks:
+
+```sh
+Rscript --vanilla scripts/run_dbkey_local.R input.sptxt output.db --mass-analyzer FT
+Rscript --vanilla tests/run_regression_tests.R
+```
+
+Choose `IT` or `FT` to match the fragment mass analyzer in your library.
+
+To use these fixes in Docker, build this checkout locally:
+
+```sh
+docker build -t dbkey-fixed .
+docker run --rm -p 3838:3838 dbkey-fixed
+```
+
+The upstream DockerHub image referenced by the original instructions below does
+not include the corrections in this fork.
+
 These instructions will help users to build the DBKey docker image, execute it, and connect to the shiny webserver.
 
 ## Clone the repo:
 First, users will need to clone a local copy of the repository.  
 
-``` git clone https://github.com/SchweppeLab/DBKey.git ```
+``` git clone https://github.com/Cajun-data/DBKey.git ```
 
 Next, change directory into the project.
 ```
