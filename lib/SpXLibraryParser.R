@@ -188,7 +188,7 @@ SpXLibraryParser <- function(Library, FragmentationMode, MassAnalyzer, Collision
     return(x[which(stri_detect_fixed(x,"Mods"))])
   }
   Mods<-sapply(AltComments,stringFinder)
-  unimodTable <- read.csv("~/Repos/MSPtoDB/unimod_custom.csv")
+  unimodTable <- read.csv(file.path(Sys.getenv("DBKEY_HOME", unset = path.expand("~/Repos/MSPtoDB")), "unimod_custom.csv"))
   #unimodTable$mod <- paste("\\b",unimodTable$mod,"\\b", sep="") #Add word boundaries to treat as regex for exact match
   modforprecursor<-list()
   modparser <- function(x) { #Function takes in a single full ModString

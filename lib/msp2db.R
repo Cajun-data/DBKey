@@ -14,6 +14,7 @@ library(data.table)
 DBbuilder<- function(Library, FragmentationMode, MassAnalyzer, CollisionEnergy, CompoundClass,
                      Filter, DBoutput, topX, cutoff, TMTPro, massOffset, IonTypes,deltaFragment, oldMod, newMod) {
 #Get file type from input file
+  dbkey_root <- Sys.getenv("DBKEY_HOME", unset = path.expand("~/Repos/MSPtoDB"))
 fileType<- (Library$name[1])
 if(grepl("msp", tolower(fileType))) {
   fileType <- "Prosit"
@@ -22,93 +23,62 @@ if(grepl("msp", tolower(fileType))) {
 } else if(grepl("blib", tolower(fileType))) {
   fileType<-"Skyline"
 }
-  # Reading file in 
-  if(fileType != "Skyline") {
-#   for (i in 1:length(Library$datapath))  {
-    LibraryPath<-Library$datapath
-
-  LibraryRead = vroom(LibraryPath, col_names = "Lib", delim = "\n",skip_empty_rows = FALSE)
-   LibraryRead<-LibraryRead$Lib
-  
-
-   
-   
-  chunksize<-min(length(LibraryRead),500000)
-    
-## accounting for small libraries
-  if(chunksize < 500000){
-
-
-    NamesList<-which(stri_detect_fixed(LibraryRead,"Name: "))
-    if(fileType=="Prosit"){
-      source("~/Repos/MSPtoDB/lib/LibraryParserv2.R")
-      Lib<-LibraryRead
-      
-      resultsTable<- LibraryParser(Library=Lib, FragmentationMode=FragmentationMode, MassAnalyzer=MassAnalyzer,
-                      CollisionEnergy=CollisionEnergy, CompoundClassArg=CompoundClass,
-                      Filter=Filter, TMTPro=TMTPro, Source=fileType, topX=topX,
-                      cutoff=cutoff,massOffset=massOffset, IonTypes=IonTypes,deltaFragment=deltaFragment, oldMod= oldMod, newMod= newMod)
-
-
+  # Complete-record streaming avoids PSOCK worker copies and ambiguous line offsets.
+  # Keep a maximum of one incomplete final spectrum between reads.
+  if (fileType != "Skyline") {
+    if (fileType == "SpectraST") {
+      source(file.path(dbkey_root, "lib", "SpXLibraryParser.R"), local = TRUE)
+      parser <- SpXLibraryParser
+    } else {
+      source(file.path(dbkey_root, "lib", "LibraryParserv2.R"), local = TRUE)
+      parser <- LibraryParser
     }
-    if(fileType=="SpectraST"){
-        source("~/Repos/MSPtoDB/lib/SpXLibraryParser.R")
-        Lib<-LibraryRead
-       
-         resultsTable<- SpXLibraryParser(Library=Lib$V1, FragmentationMode=FragmentationMode, MassAnalyzer=MassAnalyzer,
-                         CollisionEnergy=CollisionEnergy, CompoundClassArg=CompoundClass,
-                         Filter=Filter, TMTPro=TMTPro, Source=fileType, topX=topX,
-                         cutoff=cutoff, massOffset = massOffset,  IonTypes=IonTypes, deltaFragment=deltaFragment, oldMod= oldMod, newMod= newMod)
-      
+    previous_threads <- data.table::getDTthreads()
+    data.table::setDTthreads(1L)
+    on.exit(data.table::setDTthreads(previous_threads), add = TRUE)
+    results <- list()
+    spectra_done <- 0L
+    parse_complete <- function(lines) {
+      starts <- grep("^Name: ", lines)
+      if (!length(starts)) stop("Input block has no spectral entries")
+      lines <- lines[seq.int(starts[1L], length(lines))]
+      answer <- parser(
+        Library = lines, FragmentationMode = FragmentationMode,
+        MassAnalyzer = MassAnalyzer, CollisionEnergy = CollisionEnergy,
+        CompoundClassArg = CompoundClass, Filter = Filter, TMTPro = TMTPro,
+        Source = fileType, topX = topX, cutoff = cutoff, massOffset = massOffset,
+        IonTypes = IonTypes, deltaFragment = deltaFragment,
+        oldMod = oldMod, newMod = newMod)
+      if (nrow(answer) != length(starts))
+        stop("Parser returned a different spectrum count than the input")
+      spectra_done <<- spectra_done + nrow(answer)
+      message("Parsed ", spectra_done, " spectra")
+      answer
     }
-
-  } else {
-    ## finding entry beginnings across the file for splitting
-    NamesX<-seq(chunksize,length(LibraryRead)-500,by=chunksize)
-    NamesY<-seq(chunksize+500,length(LibraryRead),by=chunksize)
-    NamesList<-mapply(function(x, y) {(grep("^Name: ", LibraryRead[x:y],fixed = FALSE, perl = TRUE)+(x-1))[1]}, x = NamesX, y = NamesY)
-    
-  
-  
-  #Get indices of entries between 500 lines at evenly spaced intervals 
-  NamesListX<-c(0,NamesList)
-  NamesListY<-c(NamesList-1,length(LibraryRead))
-  
-  #get rid of library
-   rm(LibraryRead)
-  
-  if(fileType=="SpectraST"){
-    resultsTable<-bpmapply( function(x,y,z) {
-      source("~/Repos/MSPtoDB/lib/SpXLibraryParser.R")
-      #Lib<-""
-      Lib<-fread(z,skip = x-1, nrows = (y-x), blank.lines.skip=FALSE, sep = "\n",  header = FALSE )
-      SpXLibraryParser(Library=Lib$V1, FragmentationMode=FragmentationMode, MassAnalyzer=MassAnalyzer,
-                       CollisionEnergy=CollisionEnergy, CompoundClassArg=CompoundClass,
-                       Filter=Filter, TMTPro=TMTPro, Source=fileType, topX=topX,
-                       cutoff=cutoff, massOffset = massOffset,  IonTypes=IonTypes,deltaFragment=deltaFragment, oldMod= oldMod, newMod= newMod)
-    },
-    x=NamesListX, y=NamesListY, z=LibraryPath,
-    BPPARAM=SnowParam(workers = max(2,parallel::detectCores()-6)),SIMPLIFY = FALSE) %>% bind_rows
+    for (library_path in Library$datapath) {
+      input_connection <- file(library_path, open = "rt")
+      pending <- character()
+      tryCatch({
+        repeat {
+          block <- readLines(input_connection, n = 100000L, warn = FALSE)
+          if (!length(block)) break
+          pending <- c(pending, block)
+          starts <- grep("^Name: ", pending)
+          if (length(starts) > 1L) {
+            final_start <- tail(starts, 1L)
+            results[[length(results) + 1L]] <-
+              parse_complete(pending[seq_len(final_start - 1L)])
+            pending <- pending[seq.int(final_start, length(pending))]
+          }
+        }
+        if (length(grep("^Name: ", pending)))
+          results[[length(results) + 1L]] <- parse_complete(pending)
+      }, finally = close(input_connection))
+    }
+    if (!length(results)) stop("No spectra found in the input file(s)")
+    resultsTable <- data.table::rbindlist(results, use.names = TRUE, fill = TRUE)
+    rm(results)
   }
-
-
-   if(fileType=="Prosit"){
-     resultsTable<-bpmapply(function(x,y,z) {
-       
-       source("~/Repos/MSPtoDB/lib/LibraryParserv2.R")
-       Lib<-fread(z, skip=x-1, nrows=(y-x),strip.white = TRUE,header = FALSE, sep= "\n")
-       LibraryParser(Library=Lib$V1, FragmentationMode=FragmentationMode, MassAnalyzer=MassAnalyzer,
-                     CollisionEnergy=CollisionEnergy, CompoundClassArg=CompoundClass,
-                     Filter=Filter, TMTPro=TMTPro, Source=fileType, topX=topX,
-                     cutoff=cutoff,massOffset=massOffset, IonTypes=IonTypes,deltaFragment=deltaFragment, oldMod= oldMod, newMod= newMod)
-     },
-     x=NamesListX, y=NamesListY, z=LibraryPath,
-     BPPARAM=SnowParam(workers = max(2,parallel::detectCores()-6)),SIMPLIFY = FALSE) %>% bind_rows
-
-   }
-  }
-}
-  
 
   if(fileType!="Skyline"){
  # #Builds tables
@@ -185,16 +155,15 @@ if(grepl("msp", tolower(fileType))) {
   dbWriteTable(conn4, "HeaderTable", HeaderTable, overwrite = TRUE, append = F, field.types = c(version = "INTEGER NOT NULL DEFAULT 0", CreationDate="TEXT",LastModifiedDate="TEXT", Description="TEXT", Company="TEXT", ReadOnly = "BOOL", UserAccess="TEXT", PartialEdits = "BOOL"))
   dbWriteTable(conn4, "MaintenanceTable", MaintenanceTable, overwrite = TRUE, append = F, field.types = c(CreationDate="TEXT",NoofCompoundsModified = "INTEGER", Description="TEXT"))
   dbDisconnect(conn4)
-
-  dbDisconnect(conn4)
-  return(conn4)
+  return(invisible(DBoutput))
   }
 
    if( fileType == "Skyline") {
-    source("~/Repos/MSPtoDB/lib/SkylineConvert.R")
+    source(file.path(dbkey_root, "lib", "SkylineConvert.R"))
      LibraryPath<-Library$datapath
 SkylineConvert(x=LibraryPath,CollisionEnergy=CollisionEnergy,CompoundClassArg=CompoundClass,FragmentationMode=FragmentationMode,MassAnalyzer=MassAnalyzer,topX=topX,cutoff=cutoff, Filter=Filter,massOffset=massOffset, DBoutput=DBoutput)
 
   }
 }
+
 
