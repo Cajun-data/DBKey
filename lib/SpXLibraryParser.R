@@ -7,14 +7,14 @@ library(readr)
 library(compiler)
 OrganizePeaks<- function(x,precursor,z,topX,cutoff,IonTypes,TMTPro) {
   
-  dt<-x[which(x$int >0 ),]
+  dt<-x[which(is.finite(x$masses) & is.finite(x$int) & x$int > 0),]
   if(!is.null(IonTypes)) {
     dt<-dt[(substr(dt$annotations,1,1) %in% IonTypes)]
     dt<-dt[abs(as.numeric(dt$fragppmerror))<=.1,]
   }
   if(topX < length(dt$masses)) {
     peakNum <- min(topX, length(dt$masses))
-    dt$rank<- frank(dt$int)
+    dt$rank<- frank(-dt$int, ties.method = "first")
     dt<-dt[dt$rank<=topX,]
     dt[,rank:=NULL]
   }
@@ -360,7 +360,18 @@ totalprecursormod <- lapply(modforprecursor, function(x) {
   PeakDT<-mapply(function(x,y) {dt[x:y]},
                  x= c(0, cumsum(NumPeaks[-length(Names)]))+1 ,y= cumsum(NumPeaks), SIMPLIFY = FALSE)
 
-  PeakDTOrganize<- lapply(seq(1,length(PeakDT), by=1), function(x){OrgPeakCmp(PeakDT[[x]], PrecursorMasses[x], Charge[x], topX,cutoff,IonTypes)})
+  if (isTRUE(Filter)) {
+    if (length(topX) != 1L || !is.finite(topX) || topX < 1 || topX != floor(topX))
+      stop("Top N peaks must be a positive integer")
+    PeakDTOrganize <- lapply(seq_along(PeakDT), function(x) {
+      OrgPeakCmp(PeakDT[[x]], PrecursorMasses[x], Charge[x], topX, cutoff, IonTypes)
+    })
+  } else {
+    PeakDTOrganize <- lapply(PeakDT, function(x) {
+      dt <- x[which(is.finite(x$masses) & is.finite(x$int) & x$int > 0),]
+      OrdPeakCmp(dt)
+    })
+  }
   rm(PeakDT)
   adjustFragments<- function(FragTable, oldMod, newMod, modsInput)   {
     vec<- FragTable$annotations
