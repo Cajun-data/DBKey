@@ -41,7 +41,7 @@ OrgPeakCmp<-cmpfun(OrganizePeaks)
 OrdPeakCmp<-cmpfun(OrderPeaks)
 
 
-ConvertPeptide <- function(sequence, output = "elements", IAA = TRUE) {
+ConvertPeptide <- function(sequence, output = "elements", IAA = FALSE) {
   
   peptideVector <- strsplit(sequence, split = "")[[1]]
   
@@ -200,9 +200,18 @@ SpXLibraryParser <- function(Library, FragmentationMode, MassAnalyzer, Collision
         out<-str_split(remove_modstring,",",simplify = T)
         #out<-str_split(out,"@")
         mods<-as.data.frame(out)
-        mod<-mods[,3]
-        mod<-stri_replace_all_regex(mod, unimodTable$mod, as.character(unimodTable$massshift), vectorize_all = F)
-        mod<-trimws(mod)
+        mod <- trimws(mods[,3])
+        # Modification names are identifiers, not regular expressions.
+        # Exact lookup avoids recompiling the entire UniMod table per spectrum.
+        mod_mass <- unimodTable$massshift[match(mod, unimodTable$mod)]
+        missing_mod <- is.na(mod_mass)
+        if (any(missing_mod)) {
+          numeric_mod <- suppressWarnings(as.numeric(mod[missing_mod]))
+          if (any(!is.finite(numeric_mod)))
+            stop("Unknown modification(s): ", paste(unique(mod[missing_mod][!is.finite(numeric_mod)]), collapse = ", "))
+          mod_mass[missing_mod] <- numeric_mod
+        }
+        mod <- as.character(mod_mass)
         modforprecursor<<-append(modforprecursor, list(mod))
         pos<-str_split(mods[,1], "[[:alpha:]]",simplify = T)
         pos[pos<=0 & pos!=""] <- 0
@@ -305,23 +314,14 @@ sanitize_sequence <- function(Names) {
   }
 
 totalprecursormod <- lapply(modforprecursor, function(x) {
-    # Convert x to character if it's not already
-    x <- as.character(x)
-    
-    # Remove non-numeric and non-decimal point characters
-    sanitized_x <- gsub("[^0-9.]", "", x)
-    
-    # Filter out invalid or empty sanitized values
-    valid_indices <- sapply(sanitized_x, function(s) nchar(s) > 0 && grepl("^[0-9]*\\.?[0-9]*$", s))
-    
-    sanitized_values <- as.numeric(sanitized_x[valid_indices])
-    
-    sum(sanitized_values, na.rm = TRUE)
+    values <- as.numeric(x)
+    if (any(!is.finite(values))) stop("Invalid modification mass")
+    sum(values)
 })
 
   totalprecursormod[is.na(totalprecursormod)] <- 0
   PrecursorMasses<- mapply(function(x,y,z) { 
-    MonoisotopicMass(ConvertPeptide(x), charge = y) + (z/y)}, 
+    MonoisotopicMass(ConvertPeptide(x, IAA = identical(toupper(Sys.getenv("DBKEY_FIXED_CARBAMIDOMETHYL", "FALSE")), "TRUE")), charge = y) + (z/y)}, 
     x = sequence, y = Charge, z=totalprecursormod)
   
   
