@@ -167,7 +167,8 @@ MonoisotopicMass <- function(formula = list(), isotopes = list(), charge = 0) {
 SpXLibraryParser <- function(Library, FragmentationMode, MassAnalyzer, CollisionEnergy, CompoundClassArg,
                              Filter=TRUE, TMTPro, Source, topX=0, cutoff=0,massOffset=NULL, IonTypes=NULL, deltaFragment=FALSE, oldMod= NULL, newMod= NULL) {
 
-  firstName<-grep("Name", Library[1:100])[1]
+  firstName<-grep("^Name: ", Library)[1]
+  if (is.na(firstName)) stop("No Name: entry found")
   Library<-Library[firstName:length(Library)]
   Library<-gsub("FullName: ", "", Library, fixed = TRUE)
   
@@ -175,7 +176,7 @@ SpXLibraryParser <- function(Library, FragmentationMode, MassAnalyzer, Collision
   headerLength<- which(stri_detect_regex(Library[1:100],"(?i)peaks:"))[1]-nameindexes[1]
   peakindexes<-nameindexes+headerLength
   HeaderLists<- unlist(mapply(function(x, y) {Library[x:y]}, x = nameindexes, y = peakindexes, SIMPLIFY = TRUE))
-  PeakLists<- mapply(function(x, y) {Library[x:y]}, x = peakindexes+1, y = c(nameindexes[-1]-1, length(Library)))
+  PeakLists<- mapply(function(x, y) {Library[x:y]}, x = peakindexes+1, y = c(nameindexes[-1]-1, length(Library)), SIMPLIFY = FALSE)
   
   HeaderLists<-gsub("FullName: ", "", HeaderLists, fixed = TRUE)
   HeaderLists<-gsub("AvePrecursorMz:", "", HeaderLists, fixed = TRUE)
@@ -327,8 +328,8 @@ totalprecursormod <- lapply(modforprecursor, function(x) {
   
   rm(HeaderLists)
   
-  PeakLists<-mapply(function(x) {str_split(PeakLists[[x]], "\\t",simplify = TRUE)}, x = seq(from=1,to=length(PeakLists), by=1))
-  PeakLists <- lapply(PeakLists, function(x) { x[,1:3]})
+  PeakLists<-mapply(function(x) {str_split(PeakLists[[x]], "\\t",simplify = TRUE)}, x = seq_along(PeakLists), SIMPLIFY = FALSE)
+  PeakLists <- lapply(PeakLists, function(x) { x[,1:3,drop=FALSE]})
   PeakLists <- do.call("rbind", PeakLists)
   
   dt<-data.table(PeakLists)
@@ -339,14 +340,14 @@ totalprecursormod <- lapply(modforprecursor, function(x) {
   
   rm(PeakLists)
   dt$annotations<-gsub("\\[|\\]","",dt$annotations)
-  dt$fragppmerror<-str_split(str_split(dt$annotations, "/", simplify = T)[,2], ",", simplify = T)[,1]
-  dt$fragppmerror[dt$fragppmerror ==""] <- 1
+  dt$fragppmerror <- str_match(dt$annotations, "/([^,]+)")[,2]
+  dt$fragppmerror[is.na(dt$fragppmerror) | dt$fragppmerror == ""] <- 1
   dt$fragppmerror<-as.numeric(dt$fragppmerror)
   dt$annotations <- str_split(dt$annotations, "/", simplify = T)[,1]
   dt$annotations[grepl("i|m|I", dt$annotations)] <- "?"
   #dt$annotations<- gsub( "[^//]+$","",dt$annotations, perl = TRUE )
   #dt$annotations<- gsub( "[[:upper:]]","",dt$annotations, perl = TRUE )
-  dt$annotations[grepl("+18", dt$annotations)] <- "?"
+  dt$annotations[grepl("+18", dt$annotations, fixed = TRUE)] <- "?"
   dt$annotations<-gsub("-\\d+","",dt$annotations)
   dt$annotations<- gsub('[^\\^|[:alnum:]]', "", dt$annotations, perl=TRUE)
   
@@ -471,7 +472,7 @@ sanitizeSequenceKeepCharge <- function(Names) {
   }
 
   parallelTable<- data.table(blobMass=blobMass, blobInt=blobInt, 
-                             CompoundClass = "", Formula = Modsoutput, 
+                             Formula = Modsoutput, 
                              PrecursorMasses=PrecursorMasses,Names=Names,Tags=Tags, FragmentationMode=FragmentationMode,
                              CollisionEnergy=CollisionEnergy, CompoundClass=mappedCompoundClasses,
                              iRT=RetentionTime, seq=sequence, z= Charge)
@@ -483,4 +484,5 @@ sanitizeSequenceKeepCharge <- function(Names) {
 
 
 LibraryParserSpxCmp<-cmpfun(SpXLibraryParser)
+
 
